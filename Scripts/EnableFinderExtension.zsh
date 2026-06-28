@@ -27,6 +27,17 @@ status_line() {
 
   print -r -- "${lines}" | /usr/bin/head -n 1
 }
+# 判断外层安装脚本是否已经接管扩展注册和启用。
+should_skip_build_phase_enable() {
+  [[ "${JOBS_SKIP_FINDER_EXTENSION_BUILD_PHASE:-0}" == "1" ]]
+}
+# 外层安装脚本接管时跳过 Build Phase 内的注册副作用。
+skip_enable_when_requested() {
+  if should_skip_build_phase_enable; then
+    echo "skip build phase enable: outer installer will register and enable Finder Sync extension"
+    exit 0
+  fi
+}
 # 停止上一轮 Xcode 调试残留的宿主 App。
 stop_stale_host_app() {
   /usr/bin/pkill -x "${APP_PROCESS_NAME}" 2>/dev/null || true
@@ -107,6 +118,7 @@ run_enable_flow() {
 }
 # 编排 Xcode Build Phase 自动启用扩展流程。
 main() {
+  skip_enable_when_requested # 外层安装脚本接管时，避免 Build Phase 重复注册并卡住构建。
   run_enable_flow # 注册并启用 Finder Sync 扩展，成功后刷新 Finder 缓存。
 }
 

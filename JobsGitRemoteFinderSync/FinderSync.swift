@@ -76,24 +76,14 @@ private extension FinderSync {
         guard let selectedURLs = controller.selectedItemURLs(),
               selectedURLs.count == 1,
               let selectedURL = selectedURLs.first,
-              isDirectory(selectedURL) else { return [] };return [selectedURL]
-    }
-
-    func isDirectory(_ url: URL) -> Bool {
-        if let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey]) {
-            return values.isDirectory == true && values.isPackage != true
-        }
-
-        var isDirectory: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
-        return exists && isDirectory.boolValue
+              selectedURL.isFileURL else { return [] };return [selectedURL.standardizedFileURL]
     }
 
     func showFailureAlert(messages: [String]) {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "没有找到可打开的 Git 远程地址"
-        alert.informativeText = messages.isEmpty ? "请选择一个 Git 仓库文件夹后再试。" : messages.joined(separator: "\n")
+        alert.informativeText = messages.isEmpty ? "请选择一个 Git 仓库文件或文件夹后再试。" : messages.joined(separator: "\n")
         alert.addButton(withTitle: "好")
         alert.runModal()
     }
