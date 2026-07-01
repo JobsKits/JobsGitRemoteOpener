@@ -10,15 +10,28 @@ import Foundation
 struct GitRemoteResolver {
     func webURL(from folderURL: URL) throws -> URL {
         let repositoryURL = try repositoryRoot(startingAt: folderURL)
-        let gitDirectoryURL = try gitDirectoryURL(for: repositoryURL)
-        let config = try gitConfig(from: gitDirectoryURL)
-        let branchName = branchName(from: gitDirectoryURL)
-        let remoteURLString = try config.preferredRemoteURL(branchName: branchName)
-        return try webURL(fromRemoteURLString: remoteURLString)
+        let resolvedRemoteURLString: String
+
+        do {
+            resolvedRemoteURLString = try remoteURLString(from: repositoryURL)
+        } catch {
+            if let fallbackRemoteURLString = submoduleRemoteURL(for: repositoryURL) {
+                resolvedRemoteURLString = fallbackRemoteURLString
+            } else {
+                throw error
+            }
+        };return try webURL(fromRemoteURLString: resolvedRemoteURLString)
     }
 }
 
 private extension GitRemoteResolver {
+    func remoteURLString(from repositoryURL: URL) throws -> String {
+        let gitDirectoryURL = try gitDirectoryURL(for: repositoryURL)
+        let config = try gitConfig(from: gitDirectoryURL)
+        let branchName = branchName(from: gitDirectoryURL)
+        return try config.preferredRemoteURL(branchName: branchName)
+    }
+
     enum ResolverError: LocalizedError {
         case notGitRepository(URL)
         case missingConfig(URL)
@@ -43,6 +56,9 @@ private extension GitRemoteResolver {
         var branchRemotes: [String: String] = [:]
         var remoteURLs: [String: String] = [:]
         var remoteOrder: [String] = []
+        var submodulePaths: [String: String] = [:]
+        var submoduleURLs: [String: String] = [:]
+        var submoduleOrder: [String] = []
 
         func preferredRemoteURL(branchName: String?) throws -> String {
             if let branchName, let remoteName = branchRemotes[branchName], let remoteURL = remoteURLs[remoteName] {
@@ -59,6 +75,7 @@ private extension GitRemoteResolver {
 
             throw ResolverError.missingRemote(URL(fileURLWithPath: ""))
         }
+
     }
 
     func repositoryRoot(startingAt folderURL: URL) throws -> URL {
@@ -97,11 +114,7 @@ private extension GitRemoteResolver {
         }
 
         let rawPath = String(trimmedText.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        if rawPath.hasPrefix("/") {
-            return URL(fileURLWithPath: rawPath, isDirectory: true).standardizedFileURL
-        };return repositoryURL
-            .appendingPathComponent(rawPath, isDirectory: true)
-            .standardizedFileURL
+        return absoluteFileURL(path: rawPath, relativeTo: repositoryURL, isDirectory: true)
     }
 
     func gitConfig(from gitDirectoryURL: URL) throws -> GitConfig {
@@ -122,14 +135,43 @@ private extension GitRemoteResolver {
         guard let commonDirText = try? String(contentsOf: commonDirURL, encoding: .utf8) else { return urls }
 
         let commonDirPath = commonDirText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let commonGitURL: URL
-        if commonDirPath.hasPrefix("/") {
-            commonGitURL = URL(fileURLWithPath: commonDirPath, isDirectory: true)
-        } else {
-            commonGitURL = gitDirectoryURL.appendingPathComponent(commonDirPath, isDirectory: true).standardizedFileURL
-        }
+        let commonGitURL = absoluteFileURL(path: commonDirPath, relativeTo: gitDirectoryURL, isDirectory: true)
         urls.append(commonGitURL.appendingPathComponent("config"))
         return urls
+    }
+
+    func submoduleRemoteURL(for repositoryURL: URL) -> String? {
+        var parentURL = repositoryURL.deletingLastPathComponent().standardizedFileURL
+
+        while parentURL.path != "/" {
+            let gitmodulesURL = parentURL.appendingPathComponent(".gitmodules")
+
+            if FileManager.default.fileExists(atPath: gitmodulesURL.path),
+               let gitmodulesText = try? String(contentsOf: gitmodulesURL, encoding: .utf8),
+               let remoteURL = submoduleRemoteURL(
+                in: parseConfig(gitmodulesText),
+                repositoryURL: repositoryURL,
+                parentURL: parentURL
+               ) {
+                return remoteURL
+            }
+
+            parentURL.deleteLastPathComponent()
+        };return nil
+    }
+
+    func submoduleRemoteURL(in config: GitConfig, repositoryURL: URL, parentURL: URL) -> String? {
+        let repositoryPath = normalizedDirectoryPath(repositoryURL)
+
+        for submoduleName in config.submoduleOrder {
+            guard let submodulePath = config.submodulePaths[submoduleName],
+                  let submoduleURL = config.submoduleURLs[submoduleName] else { continue }
+
+            let candidateURL = absoluteFileURL(path: submodulePath, relativeTo: parentURL, isDirectory: true)
+            if normalizedDirectoryPath(candidateURL) == repositoryPath {
+                return submoduleURL
+            }
+        };return nil
     }
 
     func branchName(from gitDirectoryURL: URL) -> String? {
@@ -170,6 +212,16 @@ private extension GitRemoteResolver {
                 config.remoteURLs[remoteName] = value
             } else if sectionName == "branch", key == "remote", let branchName = subsectionName {
                 config.branchRemotes[branchName] = value
+            } else if sectionName == "submodule", let submoduleName = subsectionName {
+                if config.submodulePaths[submoduleName] == nil && config.submoduleURLs[submoduleName] == nil {
+                    config.submoduleOrder.append(submoduleName)
+                }
+
+                if key == "path" {
+                    config.submodulePaths[submoduleName] = value
+                } else if key == "url" {
+                    config.submoduleURLs[submoduleName] = value
+                }
             }
         };return config
     }
@@ -264,5 +316,19 @@ private extension GitRemoteResolver {
         guard let match = regex.firstMatch(in: value, range: range) else { return nil };return (1..<match.numberOfRanges).compactMap { index in
             guard let captureRange = Range(match.range(at: index), in: value) else { return nil };return String(value[captureRange])
         }
+    }
+
+    func absoluteFileURL(path: String, relativeTo baseURL: URL, isDirectory: Bool) -> URL {
+        let expandedPath = (path as NSString).expandingTildeInPath
+        let absolutePath = expandedPath.hasPrefix("/") ? expandedPath : (baseURL.path as NSString).appendingPathComponent(expandedPath)
+        return URL(fileURLWithPath: absolutePath, isDirectory: isDirectory).standardizedFileURL
+    }
+
+    func normalizedDirectoryPath(_ url: URL) -> String {
+        var path = url.standardizedFileURL.path
+
+        while path.count > 1 && path.hasSuffix("/") {
+            path.removeLast()
+        };return path
     }
 }

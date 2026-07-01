@@ -32,7 +32,7 @@
 | 系统版本 | macOS `12.0` 及以上 | 工程 `MACOSX_DEPLOYMENT_TARGET` 为 `12.0`，功能依赖 Finder Sync Extension。 |
 | 开发工具 | [**Xcode**](https://developer.apple.com/xcode) + `xcodebuild` | 手动运行用 Xcode；根目录批量安装脚本会调用 `xcodebuild` 构建主 App 和扩展。 |
 | Finder 扩展 | 系统设置中启用 `打开 Git 远程地址` | 构建阶段会注册并尝试启用扩展；如果菜单未出现，先确认系统设置里的 Finder 扩展开关。 |
-| Git 仓库结构 | 目标目录存在可解析的 `.git` 信息 | 支持普通仓库、子模块和 worktree；扩展直接读取 `.git/config`，不依赖 `/usr/bin/git`。 |
+| Git 仓库结构 | 目标目录存在可解析的 `.git` 信息 | 支持普通仓库、子模块和 worktree；优先读取真实 Git 配置，子模块 `.git` 指针失效时回退读取父仓 `.gitmodules`，不依赖 `/usr/bin/git`。 |
 | 默认浏览器 | 系统默认浏览器可打开网页 | 点击菜单后会把 remote 地址转成网页地址并交给 macOS 默认浏览器打开。 |
 
 建议运行前先做基础自检：
@@ -55,8 +55,8 @@ pluginkit -m -p com.apple.FinderSync -A -v | grep JobsGitRemote
 
 - Finder Sync Extension 可以进入 Finder 右键一级菜单区域，但最终位置由 macOS 决定，不能保证排在系统菜单项前面。
 - 扩展默认监控 `/`，用于覆盖 Finder 中任意位置的文件夹右键菜单。
-- 扩展不调用 `/usr/bin/git`，直接读取 `.git/config`，减少终端环境依赖。
-- 支持普通仓库、子模块、worktree 这类 `.git` 文件指向真实 Git 目录的结构。
+- 扩展不调用 `/usr/bin/git`，优先直接读取 `.git/config`，减少终端环境依赖。
+- 支持普通仓库、子模块、worktree 这类 `.git` 文件指向真实 Git 目录的结构；如果子模块 `.git` 文件指向的真实 Git 目录不存在，会向上查找父仓 `.gitmodules` 并读取对应子模块 remote。
 - Finder Sync Extension 保留 App Sandbox；本机自用版通过 `com.apple.security.temporary-exception.files.absolute-path.read-only` 给 `/` 增加只读例外，否则菜单可以出现，但点击后读取仓库 `.git/config` 会被 macOS 沙盒拦截。
 
 ## 五、排查说明 <a href="#前言" style="font-size:17px; color:green;"><b>🔼</b></a> <a href="#🔚" style="font-size:17px; color:green;"><b>🔽</b></a>
@@ -83,6 +83,7 @@ pluginkit -m -p com.apple.FinderSync -A -v | grep JobsGitRemote
   - 确认 `JobsGitRemoteFinderSync.entitlements` 里有 `com.apple.security.temporary-exception.files.absolute-path.read-only`，并包含 `/`。
   - 确认仓库存在 `remote`。
   - 优先读取当前分支 upstream remote，其次读取 `origin`，最后读取第一个 remote。
+  - 如果右键的是子模块目录，且子模块 `.git` 文件指向的 `../.git/modules/...` 不存在，确认父仓 `.gitmodules` 仍保留该子模块的 `path` 和 `url`。
   - 暂不处理需要额外登录或自定义跳转规则的私有 Git 服务。
 
 - 查看扩展调试日志：
